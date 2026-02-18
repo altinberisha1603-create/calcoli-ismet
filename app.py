@@ -7,9 +7,9 @@ st.title("Programma Calcoli - Ismet Berisha Lavoratore Numero 1")
 
 # ------------------ FUNZIONI ------------------
 
-def sviluppo(lunghezza_esterna, laterale_lamiera, spessore_lamiera):
-    lunghezza_totale = lunghezza_esterna + (laterale_lamiera * 2) - (4 * spessore_lamiera)
-    lunghezza_totale_interna = lunghezza_esterna + (laterale_lamiera * 2) + (4 * spessore_lamiera)
+def sviluppo(lunghezza_esterna, laterale_lamiera1, laterale_lamiera2, spessore_lamiera):
+    lunghezza_totale = lunghezza_esterna + (laterale_lamiera1 + laterale_lamiera2) - (4 * spessore_lamiera)
+    lunghezza_totale_interna = lunghezza_esterna + (laterale_lamiera1 + laterale_lamiera2) + (4 * spessore_lamiera)
     return lunghezza_totale, lunghezza_totale_interna
 
 
@@ -37,12 +37,13 @@ if scelta == "Sviluppo Lamiera":
 
     st.subheader("Calcolo Sviluppo Lamiera")
 
-    lunghezza = st.number_input("Lunghezza esterna", min_value=0.0)
-    laterale = st.number_input("Laterale lamiera", min_value=0.0)
-    spessore = st.number_input("Spessore lamiera", min_value=0.0)
+    lunghezza_esterna = st.number_input("Lunghezza esterna", min_value=0.0)
+    laterale_lamiera1 = st.number_input("Laterale lamiera 1", min_value=0.0)
+    laterale_lamiera2 = st.number_input("Laterale lamiera 2", min_value=0.0)
+    spessore_lamiera = st.number_input("Spessore lamiera", min_value=0.0)
 
     if st.button("Calcola sviluppo"):
-        esterno, interno = sviluppo(lunghezza, laterale, spessore)
+        esterno, interno = sviluppo(lunghezza_esterna, laterale_lamiera1, laterale_lamiera2, spessore_lamiera)
 
         st.success("Risultati")
         st.write("Sviluppo esterno:", round(esterno, 3))
