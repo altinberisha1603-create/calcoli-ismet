@@ -31,36 +31,17 @@ def readable_angle_deg(angle_deg):
     return angle_deg
 
 def H_at_x(a, H_left, H_right, x):
-    """Altezza verticale disponibile (dalla base superiore al bordo inclinato) alla x."""
     return H_left + (H_right - H_left) * (x / a)
 
 def len_on_bottom_from_dx(dx, a, H_left, H_right):
-    """Lunghezza sul bordo inclinato corrispondente a un tratto orizzontale dx."""
     slope = (H_right - H_left) / a
     return math.hypot(dx, slope * dx)
 
 def trapezoid_slope_angle_deg(a, H_left, H_right):
-    """
-    Angolo di pendenza rispetto all'orizzontale.
-    È il complementare dell'angolo tra (lato sinistro verticale) e (lato inclinato).
-    """
     dy = (H_right - H_left)
     return math.degrees(math.atan2(abs(dy), a))
 
 def compute_trapezoid_layout(a, H_left, H_right, n_spartiti, s_mid, s_first, s_last, x=None):
-    """
-    Spartito lamiera recinzione:
-      n_spartiti = numero spazi (gap) tra i piantoni
-      m = numero piantoni = n_spartiti + 1 (inizia e finisce con piantone)
-
-    Spessori:
-      - primo piantone: s_first
-      - ultimo piantone: s_last
-      - altri piantoni: s_mid (se esistono)
-
-    Vincolo base:
-      a = somma_spessori_piantoni + n_spartiti * x
-    """
     if a <= 0:
         raise ValueError("La lunghezza totale diritto deve essere > 0")
     if H_left <= 0 or H_right <= 0:
@@ -73,9 +54,8 @@ def compute_trapezoid_layout(a, H_left, H_right, n_spartiti, s_mid, s_first, s_l
     n = int(n_spartiti)
     m = n + 1
 
-    # Spessori reali per ogni piantone
     if m == 1:
-        widths = [float(s_first)]  # unico piantone
+        widths = [float(s_first)]
     elif m == 2:
         widths = [float(s_first), float(s_last)]
     else:
@@ -83,10 +63,8 @@ def compute_trapezoid_layout(a, H_left, H_right, n_spartiti, s_mid, s_first, s_l
 
     total_posts = sum(widths)
 
-    # Calcolo gap x
     if x is None:
         if n == 0:
-            # nessun gap, un solo piantone: deve occupare tutta la lunghezza
             if abs(a - total_posts) > 1e-9:
                 raise ValueError("Con Numero spartiti = 0 serve: Lunghezza totale diritto = Spessore primo piantone.")
             x = 0.0
@@ -95,22 +73,18 @@ def compute_trapezoid_layout(a, H_left, H_right, n_spartiti, s_mid, s_first, s_l
             if x < 0:
                 raise ValueError("Impossibile: con questi spessori i piantoni non ci stanno nella lunghezza totale.")
 
-    # Check vincolo base
     total_base = total_posts + n * x
     if abs(total_base - a) > 1e-6:
         raise ValueError(f"VINCOLO BASE NON RISPETTATO: {total_base:.6f} != {a:.6f}")
 
-    # Lunghezze sul bordo inclinato (variano in base al dx)
     post_bottom_widths = [len_on_bottom_from_dx(w, a, H_left, H_right) for w in widths]
     x_bottom = len_on_bottom_from_dx(x, a, H_left, H_right) if n > 0 else 0.0
 
-    # "ipotenusa" = lunghezza totale del bordo inclinato
     bottom_total = len_on_bottom_from_dx(a, a, H_left, H_right)
     bottom_check = sum(post_bottom_widths) + n * x_bottom
     if abs(bottom_check - bottom_total) > 1e-6:
         raise ValueError(f"VINCOLO BORDO INCLINATO NON RISPETTATO: {bottom_check:.6f} != {bottom_total:.6f}")
 
-    # Costruzione piantoni e gap
     slats, gaps = [], []
     cur = 0.0
     for k in range(m):
@@ -152,95 +126,185 @@ def compute_trapezoid_layout(a, H_left, H_right, n_spartiti, s_mid, s_first, s_l
         "bottom_total": float(bottom_total),
         "bottom_check": float(bottom_check),
         "slope_angle_deg": float(trapezoid_slope_angle_deg(a, H_left, H_right)),
-        "w_bottom_first": float(post_bottom_widths[0]),
-        "w_bottom_last": float(post_bottom_widths[-1]),
-        "w_bottom_mid": float(post_bottom_widths[1]) if m >= 3 else None,
     }
     return slats, gaps, info
 
-def make_trapezoid_figure(a, H_left, H_right, slats, gaps, info, label_every=1):
-    Y_TOP = max(H_left, H_right)
 
+# ------------------ DISEGNO + LAMIERE ------------------
+
+def _draw_lamiera_line(ax, a, H_left, H_right, Y_TOP, x_line):
+    if x_line < 0 or x_line > a:
+        return False
+    y_bot = Y_TOP - H_at_x(a, H_left, H_right, x_line)
+    ax.plot([x_line, x_line], [Y_TOP, y_bot], lw=1.4, color="black")
+    return True
+
+def _draw_dim_on_top(ax, x0, x1, Y_TOP, y_dim, text, fontsize=6):
+    tick = 0.010 * Y_TOP
+    ax.plot([x0, x0], [Y_TOP, Y_TOP + tick], lw=1.0, color="black")
+    ax.plot([x1, x1], [Y_TOP, Y_TOP + tick], lw=1.0, color="black")
+    ax.text((x0 + x1) / 2, y_dim, text, ha="center", va="bottom", fontsize=fontsize, color="black")
+
+def make_trapezoid_figure(
+    a, H_left, H_right, slats, gaps, info,
+    label_every=1,
+    lamiera_gap_mm=200.0
+):
+    """
+    lamiera_gap_mm = distanza lamiera dal BORDO del piantone (mm)
+
+    Aggiunte:
+      - label piccole per quota lamiera-piantone
+      - label piccole sotto x: distanza lamiera(n) -> lamiera(n+1) su BASE
+      - label piccole su IPOTENUSA: distanza lamiera(n) -> lamiera(n+1) lungo bordo inclinato
+    """
+    Y_TOP = max(H_left, H_right)
     fig, ax = plt.subplots(figsize=(18, 10), dpi=150)
 
     # Contorno trapezio
-    ax.plot(
-        [0, a, a, 0, 0],
-        [Y_TOP, Y_TOP, Y_TOP - H_right, Y_TOP - H_left, Y_TOP],
-        linewidth=2
+    ax.plot([0, a, a, 0, 0],
+            [Y_TOP, Y_TOP, Y_TOP - H_right, Y_TOP - H_left, Y_TOP],
+            linewidth=2, color="black")
+
+    # Testi alti
+    ax.text(
+        a * 0.03, Y_TOP + 0.10 * Y_TOP,
+        f"Primo={info['s_first']:.0f} | Standard={info['s_mid']:.0f} | Ultimo={info['s_last']:.0f} (mm)   "
+        f"|  Lamiera a {lamiera_gap_mm:.0f} mm dal bordo piantone",
+        fontsize=10, ha="left"
+    )
+    ax.text(
+        a * 0.03, Y_TOP + 0.16 * Y_TOP,
+        f"Ipotenusa (bordo inclinato)={info['bottom_total']:.1f} mm | Angolo pendenza={info['slope_angle_deg']:.2f}°",
+        fontsize=10, ha="left"
     )
 
-    # Info in alto
-    ax.text(a*0.03, Y_TOP + 0.10*Y_TOP,
-            f"Spessore primo={info['s_first']:.0f} | standard={info['s_mid']:.0f} | ultimo={info['s_last']:.0f} (mm)",
-            fontsize=10, ha="left")
-    ax.text(a*0.03, Y_TOP + 0.16*Y_TOP,
-            f"Ipotenusa (bordo inclinato)={info['bottom_total']:.1f} mm | Angolo pendenza={info['slope_angle_deg']:.2f}°",
-            fontsize=10, ha="left")
+    # Righe quota sopra base (più "basse" per non coprire le quote esistenti)
+    y_x_label = Y_TOP + 0.030 * Y_TOP               # x=...
+    y_lam_to_lam_base_label = Y_TOP + 0.017 * Y_TOP # sotto x
+    y_lam_to_post_label = Y_TOP + 0.040 * Y_TOP     # lamiera-piantone (piccola)
 
-    # Piantoni
-    for stt in slats:
+    m = len(slats)
+
+    # Normale esterna al bordo inclinato (per spostare le etichette fuori)
+    dx = a
+    dy = (H_right - H_left)
+    nx, ny = -dy, dx
+    norm = math.hypot(nx, ny)
+    nx, ny = nx / norm, ny / norm
+
+    # Piantoni + lamiere + quote piccole
+    for i, stt in enumerate(slats):
         xl, xr = stt["xl"], stt["xr"]
         hL, hR = stt["hL"], stt["hR"]
 
         A = (xl, Y_TOP)
         B = (xr, Y_TOP)
-        D = (xl, Y_TOP - hL)
         C = (xr, Y_TOP - hR)
+        D = (xl, Y_TOP - hL)
 
-        ax.plot([A[0], B[0]], [A[1], B[1]], lw=1.2)
-        ax.plot([B[0], C[0]], [B[1], C[1]], lw=1.2)
-        ax.plot([C[0], D[0]], [C[1], D[1]], lw=1.2)
-        ax.plot([D[0], A[0]], [D[1], A[1]], lw=1.2)
+        # Piantone arancione
+        ax.fill([A[0], B[0], C[0], D[0]], [A[1], B[1], C[1], D[1]], alpha=0.35, color="orange")
+        ax.plot([A[0], B[0]], [A[1], B[1]], lw=1.1, color="black")
+        ax.plot([B[0], C[0]], [B[1], C[1]], lw=1.1, color="black")
+        ax.plot([C[0], D[0]], [C[1], D[1]], lw=1.1, color="black")
+        ax.plot([D[0], A[0]], [D[1], A[1]], lw=1.1, color="black")
 
+        # Lamiere a distanza dal bordo
+        xL = xl - lamiera_gap_mm
+        xR = xr + lamiera_gap_mm
+
+        if i == 0:
+            if _draw_lamiera_line(ax, a, H_left, H_right, Y_TOP, xR):
+                _draw_dim_on_top(ax, xr, xR, Y_TOP, y_lam_to_post_label, f"{lamiera_gap_mm:.0f}", fontsize=6)
+        elif i == m - 1:
+            if _draw_lamiera_line(ax, a, H_left, H_right, Y_TOP, xL):
+                _draw_dim_on_top(ax, xL, xl, Y_TOP, y_lam_to_post_label, f"{lamiera_gap_mm:.0f}", fontsize=6)
+        else:
+            if _draw_lamiera_line(ax, a, H_left, H_right, Y_TOP, xL):
+                _draw_dim_on_top(ax, xL, xl, Y_TOP, y_lam_to_post_label, f"{lamiera_gap_mm:.0f}", fontsize=6)
+            if _draw_lamiera_line(ax, a, H_left, H_right, Y_TOP, xR):
+                _draw_dim_on_top(ax, xr, xR, Y_TOP, y_lam_to_post_label, f"{lamiera_gap_mm:.0f}", fontsize=6)
+
+        # Etichette originali (quelle già presenti) restano più grandi
         if stt["idx"] % label_every == 0:
-            ax.text(xl, Y_TOP - hL/2, f"{hL:.0f}", ha="right", va="center", fontsize=8, rotation=90)
-            ax.text(xr, Y_TOP - hR/2, f"{hR:.0f}", ha="left", va="center", fontsize=8, rotation=90)
+            ax.text(xl, Y_TOP - hL / 2, f"{hL:.0f}", ha="right", va="center", fontsize=8, rotation=90, color="black")
+            ax.text(xr, Y_TOP - hR / 2, f"{hR:.0f}", ha="left", va="center", fontsize=8, rotation=90, color="black")
+            ax.text((xl + xr) / 2, Y_TOP, f"{stt['w']:.0f}", ha="center", va="bottom", fontsize=8, color="black")
 
-            # spessore piantone sulla base
-            ax.text((xl+xr)/2, Y_TOP, f"{stt['w']:.0f}", ha="center", va="bottom", fontsize=8)
-
-            # larghezza “vista” sul bordo inclinato
-            mx, my = (C[0]+D[0])/2, (C[1]+D[1])/2
-            ang = math.degrees(math.atan2(D[1]-C[1], D[0]-C[0]))
+            mx, my = (C[0] + D[0]) / 2, (C[1] + D[1]) / 2
+            ang = math.degrees(math.atan2(D[1] - C[1], D[0] - C[0]))
             ang = readable_angle_deg(ang)
-            ax.text(mx, my, f"{stt['w_bottom']:.1f}", fontsize=8, rotation=ang, ha="center", va="top")
+            ax.text(mx, my, f"{stt['w_bottom']:.1f}", fontsize=8, rotation=ang, ha="center", va="top", color="black")
 
-    # Gap su base
-    y_gap_label = Y_TOP + 0.03*Y_TOP
+    # Gap su base: x (uguale a prima)
     for g in gaps:
         mid = (g["x0"] + g["x1"]) / 2
-        ax.plot([g["x0"], g["x0"]], [Y_TOP, Y_TOP + 0.015*Y_TOP], lw=1)
-        ax.plot([g["x1"], g["x1"]], [Y_TOP, Y_TOP + 0.015*Y_TOP], lw=1)
-        ax.text(mid, y_gap_label, f"x={info['x']:.0f}", ha="center", va="bottom", fontsize=8)
+        tick = 0.010 * Y_TOP
+        ax.plot([g["x0"], g["x0"]], [Y_TOP, Y_TOP + tick], lw=1, color="black")
+        ax.plot([g["x1"], g["x1"]], [Y_TOP, Y_TOP + tick], lw=1, color="black")
+        ax.text(mid, y_x_label, f"x={info['x']:.0f}", ha="center", va="bottom", fontsize=8, color="black")
 
-    # Gap su bordo inclinato (etichette fuori)
-    dx = a
-    dy = (H_right - H_left)
-    nx, ny = -dy, dx
-    norm = math.hypot(nx, ny)
-    nx, ny = nx/norm, ny/norm
-    offset = 0.05 * Y_TOP
+    # ✅ Sotto alla x: distanza lamiera(n) -> lamiera(n+1) su BASE (più piccola)
+    #    = (xl_next - gap) - (xr_prev + gap)
+    if len(slats) >= 2:
+        for i in range(len(slats) - 1):
+            left_post = slats[i]
+            right_post = slats[i + 1]
 
+            x_lam_right = left_post["xr"] + lamiera_gap_mm
+            x_lam_left = right_post["xl"] - lamiera_gap_mm
+
+            if x_lam_right < 0 or x_lam_right > a or x_lam_left < 0 or x_lam_left > a:
+                continue
+
+            dist_base = x_lam_left - x_lam_right
+            if dist_base < 0:
+                # se negativo: lamiere si sovrappongono
+                continue
+
+            _draw_dim_on_top(ax, x_lam_right, x_lam_left, Y_TOP, y_lam_to_lam_base_label, f"{dist_base:.0f}", fontsize=6)
+
+            # ✅ distanza lamiera-lamiera LUNGO IPOTENUSA (bordo inclinato grande)
+            dist_hyp = len_on_bottom_from_dx(dist_base, a, H_left, H_right)
+
+            # punti sul bordo inclinato per quelle due x
+            y0 = Y_TOP - H_at_x(a, H_left, H_right, x_lam_right)
+            y1 = Y_TOP - H_at_x(a, H_left, H_right, x_lam_left)
+            mx, my = (x_lam_right + x_lam_left) / 2, (y0 + y1) / 2
+
+            # angolo del bordo inclinato
+            ang = math.degrees(math.atan2(y1 - y0, x_lam_left - x_lam_right))
+            ang = readable_angle_deg(ang)
+
+            # sposta fuori dal trapezio (più lontano del label x_b)
+            offset = 0.085 * Y_TOP
+            ax.text(
+                mx + nx * offset, my + ny * offset,
+                f"{dist_hyp:.1f}",
+                fontsize=6, rotation=ang, ha="center", va="center", color="black"
+            )
+
+    # Gap su bordo inclinato: x_b (come prima)
+    offset_xb = 0.050 * Y_TOP
     for g in gaps:
         P0 = (g["x0"], Y_TOP - H_at_x(a, H_left, H_right, g["x0"]))
         P1 = (g["x1"], Y_TOP - H_at_x(a, H_left, H_right, g["x1"]))
-        mx, my = (P0[0]+P1[0])/2, (P0[1]+P1[1])/2
-        ang = math.degrees(math.atan2(P1[1]-P0[1], P1[0]-P0[0]))
+        mx, my = (P0[0] + P1[0]) / 2, (P0[1] + P1[1]) / 2
+        ang = math.degrees(math.atan2(P1[1] - P0[1], P1[0] - P0[0]))
         ang = readable_angle_deg(ang)
-        ax.text(mx + nx*offset, my + ny*offset, f"x_b={info['x_bottom']:.1f}",
-                fontsize=8, rotation=ang, ha="center", va="center")
+        ax.text(mx + nx * offset_xb, my + ny * offset_xb, f"x_b={info['x_bottom']:.1f}",
+                fontsize=8, rotation=ang, ha="center", va="center", color="black")
 
-    # Check riassunto
     ax.text(
-        a/2, Y_TOP + 0.22*Y_TOP,
+        a / 2, Y_TOP + 0.22 * Y_TOP,
         f"L={a:.0f} | check base={info['total_base']:.0f} | check bordo={info['bottom_check']:.0f}",
-        ha="center", fontsize=10
+        ha="center", fontsize=10, color="black"
     )
 
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlim(-0.02*a, 1.02*a)
-    ax.set_ylim(Y_TOP - max(H_left, H_right) - 0.18*Y_TOP, Y_TOP + 0.30*Y_TOP)
+    ax.set_xlim(-0.02 * a, 1.02 * a)
+    ax.set_ylim(Y_TOP - max(H_left, H_right) - 0.18 * Y_TOP, Y_TOP + 0.30 * Y_TOP)
     ax.grid(True, alpha=0.22)
     ax.set_xticks([])
     ax.set_yticks([])
@@ -249,7 +313,7 @@ def make_trapezoid_figure(a, H_left, H_right, slats, gaps, info, label_every=1):
     return fig
 
 
-# ------------------ MENU (SOLO 3 OPZIONI) ------------------
+# ------------------ MENU (3 OPZIONI) ------------------
 
 scelta = st.selectbox(
     "Scegli quale calcolo vuoi usare:",
@@ -305,6 +369,11 @@ elif scelta == "Spartito lamiera recinzione":
         s_first = st.number_input("Spessore primo piantone (mm)", min_value=1.0, value=40.0, step=1.0)
         s_last = st.number_input("Spessore ultimo piantone (mm)", min_value=1.0, value=40.0, step=1.0)
 
+        lamiera_gap_mm = st.number_input(
+            "Distanza lamiera dal bordo piantone (mm) (es. 200 = 20cm)",
+            min_value=0.0, value=200.0, step=10.0
+        )
+
         label_every = st.number_input("Etichetta ogni quanti piantoni", min_value=1, value=1, step=1)
 
     extra_calc = st.checkbox("Calcola ipotenusa e angolo di pendenza automaticamente", value=True)
@@ -334,7 +403,12 @@ elif scelta == "Spartito lamiera recinzione":
                     f"Angolo di pendenza = {info['slope_angle_deg']:.3f}° ({direzione})"
                 )
 
-            fig = make_trapezoid_figure(a, H_left, H_right, slats, gaps, info, label_every=int(label_every))
+            fig = make_trapezoid_figure(
+                a, H_left, H_right,
+                slats, gaps, info,
+                label_every=int(label_every),
+                lamiera_gap_mm=float(lamiera_gap_mm)
+            )
             st.pyplot(fig)
 
             buf = BytesIO()
