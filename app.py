@@ -31,68 +31,92 @@ def readable_angle_deg(angle_deg):
     return angle_deg
 
 def H_at_x(a, H_left, H_right, x):
+    """Altezza verticale disponibile (dalla base superiore al bordo inclinato) alla x."""
     return H_left + (H_right - H_left) * (x / a)
 
 def len_on_bottom_from_dx(dx, a, H_left, H_right):
+    """Lunghezza sul bordo inclinato corrispondente a un tratto orizzontale dx."""
     slope = (H_right - H_left) / a
     return math.hypot(dx, slope * dx)
 
 def trapezoid_slope_angle_deg(a, H_left, H_right):
     """
-    Angolo di pendenza del lato inclinato rispetto all'orizzontale.
+    Angolo di pendenza rispetto all'orizzontale.
     È il complementare dell'angolo tra (lato sinistro verticale) e (lato inclinato).
     """
     dy = (H_right - H_left)
     return math.degrees(math.atan2(abs(dy), a))
 
-def compute_trapezoid_layout(a, H_left, H_right, n, s, x=None):
+def compute_trapezoid_layout(a, H_left, H_right, n_spartiti, s_mid, s_first, s_last, x=None):
     """
-    Spartito lamiera recinzione
-    n = numero spartiti (gap) tra i piantoni
-    m = numero piantoni = n+1 (inizia e finisce con piantone)
-    vincolo base: a = m*s + n*x
+    Spartito lamiera recinzione:
+      n_spartiti = numero spazi (gap) tra i piantoni
+      m = numero piantoni = n_spartiti + 1 (inizia e finisce con piantone)
+
+    Spessori:
+      - primo piantone: s_first
+      - ultimo piantone: s_last
+      - altri piantoni: s_mid (se esistono)
+
+    Vincolo base:
+      a = somma_spessori_piantoni + n_spartiti * x
     """
     if a <= 0:
         raise ValueError("La lunghezza totale diritto deve essere > 0")
-    if s <= 0:
-        raise ValueError("Lo spessore piantone deve essere > 0")
-    if n < 0:
-        raise ValueError("Il numero spartiti deve essere >= 0")
     if H_left <= 0 or H_right <= 0:
         raise ValueError("Le altezze devono essere > 0")
+    if n_spartiti < 0:
+        raise ValueError("Il numero spartiti deve essere >= 0")
+    if s_mid <= 0 or s_first <= 0 or s_last <= 0:
+        raise ValueError("Gli spessori dei piantoni devono essere > 0")
 
+    n = int(n_spartiti)
     m = n + 1
 
+    # Spessori reali per ogni piantone
+    if m == 1:
+        widths = [float(s_first)]  # unico piantone
+    elif m == 2:
+        widths = [float(s_first), float(s_last)]
+    else:
+        widths = [float(s_first)] + [float(s_mid)] * (m - 2) + [float(s_last)]
+
+    total_posts = sum(widths)
+
+    # Calcolo gap x
     if x is None:
         if n == 0:
-            if abs(a - s) > 1e-9:
-                raise ValueError("Con numero spartiti = 0 serve lunghezza totale diritto == spessore piantone.")
+            # nessun gap, un solo piantone: deve occupare tutta la lunghezza
+            if abs(a - total_posts) > 1e-9:
+                raise ValueError("Con Numero spartiti = 0 serve: Lunghezza totale diritto = Spessore primo piantone.")
             x = 0.0
         else:
-            x = (a - m * s) / n
+            x = (a - total_posts) / n
             if x < 0:
-                raise ValueError("Impossibile: lo spessore piantone è troppo grande per questa lunghezza.")
+                raise ValueError("Impossibile: con questi spessori i piantoni non ci stanno nella lunghezza totale.")
 
-    total_base = m * s + n * x
+    # Check vincolo base
+    total_base = total_posts + n * x
     if abs(total_base - a) > 1e-6:
         raise ValueError(f"VINCOLO BASE NON RISPETTATO: {total_base:.6f} != {a:.6f}")
 
-    # lunghezze "viste" sul bordo inclinato
-    s_bottom = len_on_bottom_from_dx(s, a, H_left, H_right)
+    # Lunghezze sul bordo inclinato (variano in base al dx)
+    post_bottom_widths = [len_on_bottom_from_dx(w, a, H_left, H_right) for w in widths]
     x_bottom = len_on_bottom_from_dx(x, a, H_left, H_right) if n > 0 else 0.0
 
-    # "ipotenusa" = lunghezza totale del lato inclinato (bordo inferiore)
+    # "ipotenusa" = lunghezza totale del bordo inclinato
     bottom_total = len_on_bottom_from_dx(a, a, H_left, H_right)
-    bottom_check = m * s_bottom + n * x_bottom
+    bottom_check = sum(post_bottom_widths) + n * x_bottom
     if abs(bottom_check - bottom_total) > 1e-6:
-        raise ValueError(f"VINCOLO BORDO INFERIORE NON RISPETTATO: {bottom_check:.6f} != {bottom_total:.6f}")
+        raise ValueError(f"VINCOLO BORDO INCLINATO NON RISPETTATO: {bottom_check:.6f} != {bottom_total:.6f}")
 
+    # Costruzione piantoni e gap
     slats, gaps = [], []
+    cur = 0.0
     for k in range(m):
-        xl = k * (s + x)
-        xr = xl + s
-        if xr > a + 1e-9:
-            break
+        w = widths[k]
+        xl = cur
+        xr = xl + w
 
         hL = H_at_x(a, H_left, H_right, xl)
         hR = H_at_x(a, H_left, H_right, xr)
@@ -100,26 +124,37 @@ def compute_trapezoid_layout(a, H_left, H_right, n, s, x=None):
         slats.append({
             "idx": k + 1,
             "xl": xl, "xr": xr,
+            "w": w,
             "hL": hL, "hR": hR,
+            "w_bottom": post_bottom_widths[k],
         })
 
+        cur = xr
         if k < m - 1:
-            gaps.append({"idx": k + 1, "x0": xr, "x1": xr + x})
+            g0 = cur
+            g1 = cur + x
+            gaps.append({"idx": k + 1, "x0": g0, "x1": g1})
+            cur = g1
 
     info = {
-        "a": a,
-        "H_left": H_left,
-        "H_right": H_right,
-        "n_gaps": n,
-        "m_slats": m,
-        "s": s,
-        "x": x,
-        "total_base": total_base,
-        "s_bottom": s_bottom,
-        "x_bottom": x_bottom,
-        "bottom_total": bottom_total,
-        "bottom_check": bottom_check,
-        "slope_angle_deg": trapezoid_slope_angle_deg(a, H_left, H_right),
+        "a": float(a),
+        "H_left": float(H_left),
+        "H_right": float(H_right),
+        "n_gaps": int(n),
+        "m_slats": int(m),
+        "s_mid": float(s_mid),
+        "s_first": float(s_first),
+        "s_last": float(s_last),
+        "widths": widths,
+        "x": float(x),
+        "total_base": float(total_base),
+        "x_bottom": float(x_bottom),
+        "bottom_total": float(bottom_total),
+        "bottom_check": float(bottom_check),
+        "slope_angle_deg": float(trapezoid_slope_angle_deg(a, H_left, H_right)),
+        "w_bottom_first": float(post_bottom_widths[0]),
+        "w_bottom_last": float(post_bottom_widths[-1]),
+        "w_bottom_mid": float(post_bottom_widths[1]) if m >= 3 else None,
     }
     return slats, gaps, info
 
@@ -135,11 +170,15 @@ def make_trapezoid_figure(a, H_left, H_right, slats, gaps, info, label_every=1):
         linewidth=2
     )
 
-    ax.text(a*0.05, Y_TOP + 0.10*Y_TOP, f"Spessore piantone (base) = {info['s']:.0f} mm", fontsize=10, ha="left")
-    ax.text(a*0.05, Y_TOP + 0.16*Y_TOP, f"Piantone sul bordo in pendenza = {info['s_bottom']:.2f} mm",
+    # Info in alto
+    ax.text(a*0.03, Y_TOP + 0.10*Y_TOP,
+            f"Spessore primo={info['s_first']:.0f} | standard={info['s_mid']:.0f} | ultimo={info['s_last']:.0f} (mm)",
+            fontsize=10, ha="left")
+    ax.text(a*0.03, Y_TOP + 0.16*Y_TOP,
+            f"Ipotenusa (bordo inclinato)={info['bottom_total']:.1f} mm | Angolo pendenza={info['slope_angle_deg']:.2f}°",
             fontsize=10, ha="left")
 
-    # Stanghe (piantoni)
+    # Piantoni
     for stt in slats:
         xl, xr = stt["xl"], stt["xr"]
         hL, hR = stt["hL"], stt["hR"]
@@ -157,12 +196,15 @@ def make_trapezoid_figure(a, H_left, H_right, slats, gaps, info, label_every=1):
         if stt["idx"] % label_every == 0:
             ax.text(xl, Y_TOP - hL/2, f"{hL:.0f}", ha="right", va="center", fontsize=8, rotation=90)
             ax.text(xr, Y_TOP - hR/2, f"{hR:.0f}", ha="left", va="center", fontsize=8, rotation=90)
-            ax.text((xl+xr)/2, Y_TOP, f"{info['s']:.0f}", ha="center", va="bottom", fontsize=8)
 
+            # spessore piantone sulla base
+            ax.text((xl+xr)/2, Y_TOP, f"{stt['w']:.0f}", ha="center", va="bottom", fontsize=8)
+
+            # larghezza “vista” sul bordo inclinato
             mx, my = (C[0]+D[0])/2, (C[1]+D[1])/2
             ang = math.degrees(math.atan2(D[1]-C[1], D[0]-C[0]))
             ang = readable_angle_deg(ang)
-            ax.text(mx, my, f"{info['s_bottom']:.1f}", fontsize=8, rotation=ang, ha="center", va="top")
+            ax.text(mx, my, f"{stt['w_bottom']:.1f}", fontsize=8, rotation=ang, ha="center", va="top")
 
     # Gap su base
     y_gap_label = Y_TOP + 0.03*Y_TOP
@@ -172,7 +214,7 @@ def make_trapezoid_figure(a, H_left, H_right, slats, gaps, info, label_every=1):
         ax.plot([g["x1"], g["x1"]], [Y_TOP, Y_TOP + 0.015*Y_TOP], lw=1)
         ax.text(mid, y_gap_label, f"x={info['x']:.0f}", ha="center", va="bottom", fontsize=8)
 
-    # Gap su bordo inclinato
+    # Gap su bordo inclinato (etichette fuori)
     dx = a
     dy = (H_right - H_left)
     nx, ny = -dy, dx
@@ -189,10 +231,10 @@ def make_trapezoid_figure(a, H_left, H_right, slats, gaps, info, label_every=1):
         ax.text(mx + nx*offset, my + ny*offset, f"x_b={info['x_bottom']:.1f}",
                 fontsize=8, rotation=ang, ha="center", va="center")
 
+    # Check riassunto
     ax.text(
         a/2, Y_TOP + 0.22*Y_TOP,
-        f"L={a:.0f} | check base: m*s+n*x={info['total_base']:.0f}    "
-        f"ipotenusa (bordo)={info['bottom_total']:.1f} | angolo pendenza={info['slope_angle_deg']:.2f}°",
+        f"L={a:.0f} | check base={info['total_base']:.0f} | check bordo={info['bottom_check']:.0f}",
         ha="center", fontsize=10
     )
 
@@ -258,20 +300,32 @@ elif scelta == "Spartito lamiera recinzione":
 
     with col2:
         n = st.number_input("Numero spartiti", min_value=0, value=10, step=1)
-        s = st.number_input("Spessore piantone (mm)", min_value=1.0, value=40.0, step=1.0)
+
+        s_mid = st.number_input("Spessore piantoni standard (mm)", min_value=1.0, value=40.0, step=1.0)
+        s_first = st.number_input("Spessore primo piantone (mm)", min_value=1.0, value=40.0, step=1.0)
+        s_last = st.number_input("Spessore ultimo piantone (mm)", min_value=1.0, value=40.0, step=1.0)
+
         label_every = st.number_input("Etichetta ogni quanti piantoni", min_value=1, value=1, step=1)
 
     extra_calc = st.checkbox("Calcola ipotenusa e angolo di pendenza automaticamente", value=True)
 
     if st.button("Calcola spartito"):
         try:
-            slats, gaps, info = compute_trapezoid_layout(a, H_left, H_right, int(n), s, x=None)
+            slats, gaps, info = compute_trapezoid_layout(
+                a=a,
+                H_left=H_left,
+                H_right=H_right,
+                n_spartiti=int(n),
+                s_mid=s_mid,
+                s_first=s_first,
+                s_last=s_last,
+                x=None
+            )
 
             st.success("Calcolo riuscito ✅")
             st.write(f"Numero piantoni = n+1 = {info['m_slats']}")
             st.write(f"Spazio tra piantoni (x) = {info['x']:.3f} mm")
-            st.write(f"Larghezza piantone sul bordo in pendenza = {info['s_bottom']:.3f} mm")
-            st.write(f"Spazio sul bordo in pendenza = {info['x_bottom']:.3f} mm")
+            st.write(f"Spazio sul bordo in pendenza (x_b) = {info['x_bottom']:.3f} mm")
 
             if extra_calc:
                 direzione = "scende verso destra" if (H_right > H_left) else ("sale verso destra" if (H_right < H_left) else "piatto")
